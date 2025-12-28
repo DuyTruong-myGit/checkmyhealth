@@ -118,6 +118,7 @@ const callAiApiReal = async (imageUrl) => {
                 success: false,
                 error_type: validation.reason,
                 description: validation.message,
+                message: validation.message,
                 is_valid_skin_image: false
             };
         }
@@ -161,7 +162,7 @@ const callAiApiReal = async (imageUrl) => {
         let riskLevel = 'low';
         if (validation.isDisease) {
             if (confidence >= 0.85) riskLevel = 'high';
-            else if (confidence >= 0.7) riskLevel = 'medium';
+            else if (confidence >= 0.7) riskLevel = 'moderate';
             
             // Cancer types should be high risk regardless of confidence
             const cancerTypes = ['Melanoma', 'Basal Cell Carcinoma', 'Squamous Cell Carcinoma'];
