@@ -36,46 +36,52 @@ const isPlaceholderImage = (imageUrl) => {
 
 
 /**
- * Search Google Images for a query and return the first image URL
+ * Search Bing Images for a query and return the first image URL
  * @param {string} query - Search query (usually article title)
  * @returns {Promise<string|null>} - Image URL or null if not found
  */
-const searchGoogleImage = async (query) => {
+const searchBingImage = async (query) => {
   try {
     // Clean and encode the query
     const cleanQuery = query.trim().substring(0, 100);
-    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(cleanQuery)}&tbm=isch`;
+    const searchUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(cleanQuery)}&first=1`;
 
     const response = await axios.get(searchUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
       },
-      timeout: 5000
+      timeout: 8000
     });
 
     const $ = cheerio.load(response.data);
 
-    // Google Images stores image URLs in various places, try multiple strategies
+    // Bing stores image URLs in 'm' attribute of links
     let imageUrl = null;
 
-    // Strategy 1: Look for img tags with valid src
-    $('img').each((i, elem) => {
-      const src = $(elem).attr('src');
-      if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
-        // Skip Google's own logos and small images
-        if (!src.includes('google.com/images/') && !src.includes('gstatic.com')) {
-          imageUrl = src;
-          return false; // Break the loop
+    // Strategy 1: Parse JSON from 'm' attribute
+    $('a.iusc').each((i, elem) => {
+      try {
+        const mAttr = $(elem).attr('m');
+        if (mAttr) {
+          const data = JSON.parse(mAttr);
+          if (data.murl || data.turl) {
+            imageUrl = data.murl || data.turl;
+            return false;
+          }
         }
+      } catch (e) {
+        // Skip if JSON parse fails
       }
     });
 
-    // Strategy 2: If no image found, look in data attributes
+    // Strategy 2: Fallback to img tags
     if (!imageUrl) {
-      $('img').each((i, elem) => {
-        const dataSrc = $(elem).attr('data-src') || $(elem).attr('data-iurl');
-        if (dataSrc && (dataSrc.startsWith('http://') || dataSrc.startsWith('https://'))) {
-          imageUrl = dataSrc;
+      $('img.mimg').each((i, elem) => {
+        const src = $(elem).attr('src');
+        if (src && src.startsWith('http')) {
+          imageUrl = src;
           return false;
         }
       });
@@ -83,7 +89,7 @@ const searchGoogleImage = async (query) => {
 
     return imageUrl;
   } catch (error) {
-    console.error(`Error searching Google Images for "${query}":`, error.message);
+    console.error(`Error searching Bing Images for "${query}":`, error.message);
     return null;
   }
 };
@@ -105,7 +111,7 @@ const fillMissingThumbnails = async (articles) => {
 
   // Fetch images in parallel with error handling
   const imagePromises = articlesNeedingImages.map(article =>
-    searchGoogleImage(article.title)
+    searchBingImage(article.title)
       .then(imageUrl => ({ article, imageUrl }))
       .catch(() => ({ article, imageUrl: null }))
   );
