@@ -448,9 +448,61 @@ const diagnosisController = {
         }
     },
     
-    // ... Giữ nguyên các hàm getHistory, deleteHistoryItem ...
-    getHistory: async (req, res) => { /* ... giữ nguyên ... */ },
-    deleteHistoryItem: async (req, res) => { /* ... giữ nguyên ... */ }
+     /**
+      * GET /api/diagnose/history
+      * Get diagnosis history for current user
+      */
+     getHistory: async (req, res) => {
+         try {
+             const userId = req.user.userId;
+             const history = await diagnosisModel.findByUserId(userId);
+            
+             res.status(200).json({
+                 success: true,
+                 count: history.length,
+                 data: history
+             });
+         } catch (error) {
+             console.error('Get History Error:', error);
+             res.status(500).json({ 
+                 success: false,
+                 message: 'Lỗi máy chủ', 
+                 error: error.message 
+             });
+         }
+     },
+
+     /**
+      * DELETE /api/diagnose/:id
+      * Delete a diagnosis history item
+      */
+     deleteHistoryItem: async (req, res) => {
+         try {
+             const { id } = req.params;
+             const userId = req.user.userId;
+
+             const success = await diagnosisModel.deleteById(id, userId);
+
+             if (success) {
+                 res.status(200).json({ 
+                     success: true,
+                     message: 'Đã xóa kết quả chẩn đoán.' 
+                 });
+             } else {
+                 res.status(404).json({ 
+                     success: false,
+                     message: 'Không tìm thấy bản ghi hoặc bạn không có quyền xóa.' 
+                 });
+             }
+         } catch (error) {
+             console.error('Delete Error:', error);
+             res.status(500).json({ 
+                 success: false,
+                 message: 'Lỗi máy chủ', 
+                 error: error.message 
+             });
+         }
+     }
 };
 
 module.exports = diagnosisController;
