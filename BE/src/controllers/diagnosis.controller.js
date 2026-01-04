@@ -352,6 +352,23 @@
 const diagnosisModel = require('../models/diagnosis.model');
 const { pool } = require('../config/db');
 
+// === [THÊM MỚI] BẢNG MAP CHUẨN HOÁ TÊN BỆNH ===
+// Key: Tên AI trả về | Value: disease_code trong Database
+const DISEASE_CODE_MAP = {
+    'Actinic Keratosis': 'Actinic Keratosis',
+    'Basal Cell Carcinoma': 'Basal Cell Carcinoma',
+    'Dermato Fibroma': 'Dermato Fibroma',
+    'Melanoma': 'Melanoma',
+    'Nevus': 'Nevus',
+    'Normal Skin': 'Normal Skin',
+    'Pigmented Benign Keratosis': 'Pigmented Benign Keratosis',
+    'Ringworm': 'Ringworm',
+    'Seborrheic Keratosis': 'Seborrheic Keratosis',
+    'Squamous Cell Carcinoma': 'Squamous Cell Carcinoma',
+    'Vascular Lesion': 'Vascular Lesion',
+    'Unknown_Normal': null, // Không query DB
+};
+
 const diagnosisController = {
     diagnose: async (req, res) => {
         try {
@@ -375,30 +392,23 @@ const diagnosisController = {
             const predictedClass = aiResult.class || 'Unknown_Normal';
             const confidence = parseFloat(aiResult.confidence || 0);
 
-            // === [ĐÃ SỬA] LOGIC TÍNH MỨC ĐỘ NGUY HIỂM ===
-            let riskLevel = 'low'; // Mặc định
-
-            // Danh sách phân loại
+            // === LOGIC MỨC ĐỘ NGUY HIỂM ===
+            let riskLevel = 'low';
             const SAFE_CLASSES = ['Normal Skin', 'Nevus', 'Unknown_Normal'];
-            
-            // ✅ PHÂN LOẠI CHI TIẾT HỖN:
-            const CRITICAL_CLASSES = ['Melanoma']; // Ung thư ác tính nhất
-            const HIGH_RISK_CLASSES = ['Basal Cell Carcinoma', 'Squamous Cell Carcinoma']; // Ung thư da khác
+            const CRITICAL_CLASSES = ['Melanoma'];
+            const HIGH_RISK_CLASSES = ['Basal Cell Carcinoma', 'Squamous Cell Carcinoma'];
 
             if (SAFE_CLASSES.includes(predictedClass)) {
                 riskLevel = 'low'; 
                 if (predictedClass === 'Normal Skin') riskLevel = 'none';
             } 
             else if (CRITICAL_CLASSES.includes(predictedClass)) {
-                // ✅ Melanoma → CRITICAL (Rất nguy hiểm)
                 riskLevel = 'critical';
             } 
             else if (HIGH_RISK_CLASSES.includes(predictedClass)) {
-                // ✅ Ung thư da khác → HIGH
                 riskLevel = 'high';
             } 
             else {
-                // Các bệnh da liễu thông thường
                 if (confidence >= 0.80) {
                     riskLevel = 'moderate';
                 } else {
@@ -406,32 +416,53 @@ const diagnosisController = {
                 }
             }
 
-            // 4. Lấy thông tin bệnh từ DB
-            let diseaseInfo = null;
+            // === [ĐÃ SỬA] LOGIC LẤY THÔNG TIN BỆNH TỪ DB ===
             let diseaseNameVi = "Chưa cập nhật";
             let infoId = null;
             let description = "";
 
+            // Xử lý đặc biệt cho Unknown và Normal
             if (predictedClass === 'Unknown_Normal') {
                 diseaseNameVi = "Không xác định / Ảnh không liên quan";
                 description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này.";
-            } else if (predictedClass === 'Normal Skin') {
+                infoId = null; // Không có bài viết
+            } 
+            else if (predictedClass === 'Normal Skin') {
                 diseaseNameVi = "Da bình thường";
-                description = "Không phát hiện dấu hiệu bất thường trên vùng da này.";
-            } else {
-                try {
-                    const [rows] = await pool.query(
-                        'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
-                        [predictedClass]
-                    );
-                    if (rows.length > 0) {
-                        diseaseInfo = rows[0];
-                        diseaseNameVi = diseaseInfo.disease_name_vi;
-                        infoId = diseaseInfo.info_id;
-                        description = diseaseInfo.description;
+                description = "Không phát hiện dấu hiệu bất thường.";
+                infoId = null; // Không cần bài viết
+            } 
+            else {
+                // ✅ Query DB cho các bệnh thật
+                const diseaseCode = DISEASE_CODE_MAP[predictedClass];
+                
+                if (diseaseCode) {
+                    try {
+                        console.log(`🔍 Querying DB for: "${diseaseCode}"`);
+                        
+                        const [rows] = await pool.query(
+                            'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
+                            [diseaseCode]
+                        );
+
+                        if (rows.length > 0) {
+                            const diseaseInfo = rows[0];
+                            diseaseNameVi = diseaseInfo.disease_name_vi;
+                            infoId = diseaseInfo.info_id;
+                            description = diseaseInfo.description;
+                            console.log(`✅ Found in DB: ${diseaseNameVi} (ID: ${infoId})`);
+                        } else {
+                            console.warn(`⚠️ No data found for: "${diseaseCode}"`);
+                            // Fallback: Dùng mapping cứng từ api_service.dart
+                            diseaseNameVi = mapEnglishToVietnamese(predictedClass);
+                        }
+                    } catch (dbError) {
+                        console.error('❌ Database Query Error:', dbError);
+                        diseaseNameVi = mapEnglishToVietnamese(predictedClass);
                     }
-                } catch (dbError) {
-                    console.error('Database Query Error:', dbError);
+                } else {
+                    console.warn(`⚠️ Disease not in mapping: "${predictedClass}"`);
+                    diseaseNameVi = predictedClass; // Giữ nguyên tên tiếng Anh
                 }
             }
 
@@ -441,10 +472,10 @@ const diagnosisController = {
                 image_url: imageUrl,
                 disease_name: predictedClass,
                 disease_name_vi: diseaseNameVi,
-                info_id: infoId, // ✅ Đảm bảo trả về để hiện nút "Xem chi tiết"
+                info_id: infoId, // ✅ null nếu không có, có giá trị nếu tìm thấy
                 confidence_score: confidence,
                 description: description,
-                risk_level: riskLevel, // ✅ Giờ có thể là: critical, high, moderate, low, none
+                risk_level: riskLevel,
                 recommendation: "Kết quả mang tính tham khảo. Vui lòng gặp bác sĩ.",
                 prediction_code: predictedClass, 
                 confidence_percent: `${(confidence * 100).toFixed(2)}%`
@@ -459,7 +490,7 @@ const diagnosisController = {
                 finalResult
             );
 
-            console.log(`✅ Saved: ${predictedClass} (${riskLevel}) for user ${req.user.userId}`);
+            console.log(`✅ Result: ${diseaseNameVi} (${riskLevel}) | info_id: ${infoId}`);
 
             return res.status(200).json(finalResult);
 
@@ -504,7 +535,7 @@ const diagnosisController = {
             } else {
                 res.status(404).json({ 
                     success: false,
-                    message: 'Không tìm thấy bản ghi hoặc bạn không có quyền xóa.' 
+                    message: 'Không tìm thấy bản ghi.' 
                 });
             }
         } catch (error) {
@@ -517,5 +548,24 @@ const diagnosisController = {
         }
     }
 };
+
+// === HÀM HELPER: MAPPING TIẾNG VIỆT (FALLBACK) ===
+function mapEnglishToVietnamese(className) {
+    const mapping = {
+        'Actinic Keratosis': 'Dày sừng quang hóa',
+        'Basal Cell Carcinoma': 'Ung thư tế bào đáy',
+        'Dermato Fibroma': 'U xơ da',
+        'Melanoma': 'Ung thư hắc tố (Melanoma)',
+        'Nevus': 'Nốt ruồi (Nevus)',
+        'Normal Skin': 'Da bình thường',
+        'Pigmented Benign Keratosis': 'Dày sừng da dầu',
+        'Ringworm': 'Hắc lào (Nấm da)',
+        'Seborrheic Keratosis': 'Dày sừng tiết bã',
+        'Squamous Cell Carcinoma': 'Ung thư tế bào vảy',
+        'Vascular Lesion': 'Tổn thương mạch máu',
+        'Unknown_Normal': 'Không xác định'
+    };
+    return mapping[className] || className;
+}
 
 module.exports = diagnosisController;
