@@ -125,7 +125,7 @@ router.post(
  *               $ref: '#/components/schemas/Error'
  */
 router.get('/history', authMiddleware, diagnosisController.getHistory);
-
+router.get('/code/:diseaseCode', authenticate, diseaseController.getDiseaseByCode);
 /**
  * @swagger
  * /api/diagnose/{id}:
@@ -161,6 +161,6 @@ router.get('/history', authMiddleware, diagnosisController.getHistory);
  */
 router.delete('/:id', authMiddleware, diagnosisController.deleteHistoryItem);
 
-router.get('/code/:diseaseCode', authenticate, diseaseController.getDiseaseByCode);
+
 
 module.exports = router;
