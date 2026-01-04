@@ -352,8 +352,7 @@
 const diagnosisModel = require('../models/diagnosis.model');
 const { pool } = require('../config/db');
 
-// === [THÊM MỚI] BẢNG MAP CHUẨN HOÁ TÊN BỆNH ===
-// Key: Tên AI trả về | Value: disease_code trong Database
+// === BẢNG MAP CHUẨN HOÁ TÊN BỆNH ===
 const DISEASE_CODE_MAP = {
     'Actinic Keratosis': 'Actinic Keratosis',
     'Basal Cell Carcinoma': 'Basal Cell Carcinoma',
@@ -392,6 +391,10 @@ const diagnosisController = {
             const predictedClass = aiResult.class || 'Unknown_Normal';
             const confidence = parseFloat(aiResult.confidence || 0);
 
+            console.log('='.repeat(70));
+            console.log(`📊 AI PREDICTION: ${predictedClass} (${(confidence * 100).toFixed(2)}%)`);
+            console.log('='.repeat(70));
+
             // === LOGIC MỨC ĐỘ NGUY HIỂM ===
             let riskLevel = 'low';
             const SAFE_CLASSES = ['Normal Skin', 'Nevus', 'Unknown_Normal'];
@@ -416,7 +419,9 @@ const diagnosisController = {
                 }
             }
 
-            // === [ĐÃ SỬA] LOGIC LẤY THÔNG TIN BỆNH TỪ DB ===
+            console.log(`⚠️  Risk Level: ${riskLevel.toUpperCase()}`);
+
+            // === LOGIC LẤY THÔNG TIN BỆNH TỪ DB ===
             let diseaseNameVi = "Chưa cập nhật";
             let infoId = null;
             let description = "";
@@ -425,12 +430,14 @@ const diagnosisController = {
             if (predictedClass === 'Unknown_Normal') {
                 diseaseNameVi = "Không xác định / Ảnh không liên quan";
                 description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này.";
-                infoId = null; // Không có bài viết
+                infoId = null;
+                console.log('🚫 Unknown/Invalid image - No database lookup');
             } 
             else if (predictedClass === 'Normal Skin') {
                 diseaseNameVi = "Da bình thường";
                 description = "Không phát hiện dấu hiệu bất thường.";
-                infoId = null; // Không cần bài viết
+                infoId = null;
+                console.log('✅ Normal healthy skin - No database lookup');
             } 
             else {
                 // ✅ Query DB cho các bệnh thật
@@ -438,31 +445,38 @@ const diagnosisController = {
                 
                 if (diseaseCode) {
                     try {
-                        console.log(`🔍 Querying DB for: "${diseaseCode}"`);
+                        console.log(`🔍 Looking up in database: "${diseaseCode}"`);
                         
                         const [rows] = await pool.query(
                             'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
                             [diseaseCode]
                         );
 
+                        console.log(`📦 Database returned ${rows.length} rows`);
+
                         if (rows.length > 0) {
                             const diseaseInfo = rows[0];
                             diseaseNameVi = diseaseInfo.disease_name_vi;
                             infoId = diseaseInfo.info_id;
                             description = diseaseInfo.description;
-                            console.log(`✅ Found in DB: ${diseaseNameVi} (ID: ${infoId})`);
+                            
+                            console.log('✅ FOUND IN DATABASE:');
+                            console.log(`   ├─ Vietnamese Name: ${diseaseNameVi}`);
+                            console.log(`   ├─ Info ID: ${infoId}`);
+                            console.log(`   └─ Description: ${description.substring(0, 50)}...`);
                         } else {
-                            console.warn(`⚠️ No data found for: "${diseaseCode}"`);
-                            // Fallback: Dùng mapping cứng từ api_service.dart
+                            console.warn('⚠️  NO DATABASE RECORD FOUND!');
+                            console.warn(`   └─ Disease code "${diseaseCode}" does not exist in skin_diseases_info table`);
+                            console.warn(`   └─ Using fallback Vietnamese name`);
                             diseaseNameVi = mapEnglishToVietnamese(predictedClass);
                         }
                     } catch (dbError) {
-                        console.error('❌ Database Query Error:', dbError);
+                        console.error('❌ DATABASE QUERY ERROR:', dbError.message);
                         diseaseNameVi = mapEnglishToVietnamese(predictedClass);
                     }
                 } else {
-                    console.warn(`⚠️ Disease not in mapping: "${predictedClass}"`);
-                    diseaseNameVi = predictedClass; // Giữ nguyên tên tiếng Anh
+                    console.warn(`⚠️  Disease not in mapping: "${predictedClass}"`);
+                    diseaseNameVi = predictedClass;
                 }
             }
 
@@ -490,7 +504,14 @@ const diagnosisController = {
                 finalResult
             );
 
-            console.log(`✅ Result: ${diseaseNameVi} (${riskLevel}) | info_id: ${infoId}`);
+            console.log('='.repeat(70));
+            console.log('📤 FINAL RESPONSE TO MOBILE:');
+            console.log(`   ├─ Disease (EN): ${predictedClass}`);
+            console.log(`   ├─ Disease (VI): ${diseaseNameVi}`);
+            console.log(`   ├─ Risk Level: ${riskLevel}`);
+            console.log(`   ├─ Info ID: ${infoId === null ? 'NULL (no article)' : infoId}`);
+            console.log(`   └─ Confidence: ${(confidence * 100).toFixed(2)}%`);
+            console.log('='.repeat(70));
 
             return res.status(200).json(finalResult);
 
