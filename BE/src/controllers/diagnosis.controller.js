@@ -349,12 +349,8 @@
 
 // module.exports = diagnosisController;
 
-
 const diagnosisModel = require('../models/diagnosis.model');
 const { pool } = require('../config/db');
-
-// Danh sách các bệnh nguy hiểm (để map risk level)
-const CANCER_TYPES = ['Melanoma', 'Basal Cell Carcinoma', 'Squamous Cell Carcinoma'];
 
 const diagnosisController = {
     diagnose: async (req, res) => {
@@ -364,64 +360,65 @@ const diagnosisController = {
                 return res.status(400).json({ success: false, message: 'Vui lòng upload ảnh.' });
             }
             
-            // Lấy URL ảnh từ Cloudinary (Cloudinary middleware đã xử lý việc upload rồi)
             const imageUrl = req.file.secure_url || req.file.url;
 
-            // 2. [QUAN TRỌNG] Nhận kết quả AI từ Mobile gửi lên (qua req.body)
-            // Mobile gửi lên dạng String JSON, cần parse ra
+            // 2. Nhận kết quả AI từ Mobile
             let aiResult = {};
             if (req.body.ai_result) {
                 try {
                     aiResult = JSON.parse(req.body.ai_result);
                 } catch (e) {
-                    aiResult = req.body.ai_result; // Nếu đã là object
+                    aiResult = req.body.ai_result;
                 }
             }
 
             const predictedClass = aiResult.class || 'Unknown_Normal';
             const confidence = parseFloat(aiResult.confidence || 0);
-            // === [SỬA LẠI LOGIC TÍNH MỨC ĐỘ NGUY HIỂM] ===
-            let riskLevel = 'low'; // Mặc định là thấp
 
-            // 1. Danh sách các lớp AN TOÀN hoặc KHÔNG PHẢI BỆNH (Luôn là Low/None)
+            // === [ĐÃ SỬA] LOGIC TÍNH MỨC ĐỘ NGUY HIỂM ===
+            let riskLevel = 'low'; // Mặc định
+
+            // Danh sách phân loại
             const SAFE_CLASSES = ['Normal Skin', 'Nevus', 'Unknown_Normal'];
             
-            // 2. Danh sách các bệnh UNG THƯ/NGUY HIỂM (Luôn là High)
-            const DANGEROUS_CLASSES = ['Melanoma', 'Basal Cell Carcinoma', 'Squamous Cell Carcinoma'];
+            // ✅ PHÂN LOẠI CHI TIẾT HỖN:
+            const CRITICAL_CLASSES = ['Melanoma']; // Ung thư ác tính nhất
+            const HIGH_RISK_CLASSES = ['Basal Cell Carcinoma', 'Squamous Cell Carcinoma']; // Ung thư da khác
 
             if (SAFE_CLASSES.includes(predictedClass)) {
-                // Nếu là da thường, nốt ruồi hoặc ảnh rác -> Luôn an toàn
                 riskLevel = 'low'; 
-                if (predictedClass === 'Normal Skin') riskLevel = 'none'; // Da khỏe hẳn
-            } else if (DANGEROUS_CLASSES.includes(predictedClass)) {
-                // Nếu là ung thư -> Luôn nguy hiểm
+                if (predictedClass === 'Normal Skin') riskLevel = 'none';
+            } 
+            else if (CRITICAL_CLASSES.includes(predictedClass)) {
+                // ✅ Melanoma → CRITICAL (Rất nguy hiểm)
+                riskLevel = 'critical';
+            } 
+            else if (HIGH_RISK_CLASSES.includes(predictedClass)) {
+                // ✅ Ung thư da khác → HIGH
                 riskLevel = 'high';
-            } else {
-                // Các bệnh còn lại (Nấm, Dày sừng...): Dựa vào độ tin cậy
+            } 
+            else {
+                // Các bệnh da liễu thông thường
                 if (confidence >= 0.80) {
-                    riskLevel = 'moderate'; // Bệnh da liễu thông thường nhưng rõ ràng -> Cần theo dõi
+                    riskLevel = 'moderate';
                 } else {
                     riskLevel = 'low';
                 }
             }
 
-            
-
-            // 4. Lấy thông tin bệnh tiếng Việt từ DB
+            // 4. Lấy thông tin bệnh từ DB
             let diseaseInfo = null;
             let diseaseNameVi = "Chưa cập nhật";
             let infoId = null;
             let description = "";
 
-            // Xử lý cứng cho trường hợp Unknown và Normal để không cần query DB
             if (predictedClass === 'Unknown_Normal') {
                 diseaseNameVi = "Không xác định / Ảnh không liên quan";
-                description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này. Có thể do ảnh mờ, thiếu sáng hoặc không phải ảnh da.";
+                description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này.";
             } else if (predictedClass === 'Normal Skin') {
                 diseaseNameVi = "Da bình thường";
                 description = "Không phát hiện dấu hiệu bất thường trên vùng da này.";
             } else {
-                // Chỉ query DB nếu là bệnh thật sự
                 try {
                     const [rows] = await pool.query(
                         'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
@@ -438,23 +435,22 @@ const diagnosisController = {
                 }
             }
 
-            // 5. Chuẩn bị dữ liệu để lưu và trả về
+            // 5. Chuẩn bị kết quả
             const finalResult = {
                 success: true,
                 image_url: imageUrl,
                 disease_name: predictedClass,
                 disease_name_vi: diseaseNameVi,
-                info_id: infoId,
+                info_id: infoId, // ✅ Đảm bảo trả về để hiện nút "Xem chi tiết"
                 confidence_score: confidence,
                 description: description,
-                risk_level: riskLevel,
+                risk_level: riskLevel, // ✅ Giờ có thể là: critical, high, moderate, low, none
                 recommendation: "Kết quả mang tính tham khảo. Vui lòng gặp bác sĩ.",
-                // Các trường phụ trợ cho App hiển thị
                 prediction_code: predictedClass, 
                 confidence_percent: `${(confidence * 100).toFixed(2)}%`
             };
 
-            // 6. Lưu vào Database (Lúc này mới lưu)
+            // 6. Lưu Database
             await diagnosisModel.create(
                 req.user.userId,
                 imageUrl, 
@@ -463,9 +459,8 @@ const diagnosisController = {
                 finalResult
             );
 
-            console.log(`✅ Đã lưu kết quả cho user ${req.user.userId}: ${predictedClass}`);
+            console.log(`✅ Saved: ${predictedClass} (${riskLevel}) for user ${req.user.userId}`);
 
-            // Trả về cho App
             return res.status(200).json(finalResult);
 
         } catch (error) {
@@ -474,61 +469,53 @@ const diagnosisController = {
         }
     },
     
-     /**
-      * GET /api/diagnose/history
-      * Get diagnosis history for current user
-      */
-     getHistory: async (req, res) => {
-         try {
-             const userId = req.user.userId;
-             const history = await diagnosisModel.findByUserId(userId);
-            
-             res.status(200).json({
-                 success: true,
-                 count: history.length,
-                 data: history
-             });
-         } catch (error) {
-             console.error('Get History Error:', error);
-             res.status(500).json({ 
-                 success: false,
-                 message: 'Lỗi máy chủ', 
-                 error: error.message 
-             });
-         }
-     },
+    getHistory: async (req, res) => {
+        try {
+            const userId = req.user.userId;
+            const history = await diagnosisModel.findByUserId(userId);
+           
+            res.status(200).json({
+                success: true,
+                count: history.length,
+                data: history
+            });
+        } catch (error) {
+            console.error('Get History Error:', error);
+            res.status(500).json({ 
+                success: false,
+                message: 'Lỗi máy chủ', 
+                error: error.message 
+            });
+        }
+    },
 
-     /**
-      * DELETE /api/diagnose/:id
-      * Delete a diagnosis history item
-      */
-     deleteHistoryItem: async (req, res) => {
-         try {
-             const { id } = req.params;
-             const userId = req.user.userId;
+    deleteHistoryItem: async (req, res) => {
+        try {
+            const { id } = req.params;
+            const userId = req.user.userId;
 
-             const success = await diagnosisModel.deleteById(id, userId);
+            const success = await diagnosisModel.deleteById(id, userId);
 
-             if (success) {
-                 res.status(200).json({ 
-                     success: true,
-                     message: 'Đã xóa kết quả chẩn đoán.' 
-                 });
-             } else {
-                 res.status(404).json({ 
-                     success: false,
-                     message: 'Không tìm thấy bản ghi hoặc bạn không có quyền xóa.' 
-                 });
-             }
-         } catch (error) {
-             console.error('Delete Error:', error);
-             res.status(500).json({ 
-                 success: false,
-                 message: 'Lỗi máy chủ', 
-                 error: error.message 
-             });
-         }
-     }
+            if (success) {
+                res.status(200).json({ 
+                    success: true,
+                    message: 'Đã xóa kết quả chẩn đoán.' 
+                });
+            } else {
+                res.status(404).json({ 
+                    success: false,
+                    message: 'Không tìm thấy bản ghi hoặc bạn không có quyền xóa.' 
+                });
+            }
+        } catch (error) {
+            console.error('Delete Error:', error);
+            res.status(500).json({ 
+                success: false,
+                message: 'Lỗi máy chủ', 
+                error: error.message 
+            });
+        }
+    }
 };
 
 module.exports = diagnosisController;
