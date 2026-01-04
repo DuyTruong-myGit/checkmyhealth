@@ -7,6 +7,10 @@ const HOST_CACHE_TTL = 5 * 60 * 1000; // 5 phút
 let cachedHosts = null;
 let cachedHostsLoadedAt = 0;
 
+// Cache cho articles với thumbnails (progressive loading)
+const ARTICLE_CACHE_TTL = 10 * 60 * 1000; // 10 phút
+const articlesCache = new Map(); // key: source URL, value: { articles, timestamp, thumbnailsReady }
+
 const parseHost = (rawUrl) => {
   try {
     return new URL(rawUrl).hostname;
@@ -14,6 +18,10 @@ const parseHost = (rawUrl) => {
     return null;
   }
 };
+
+// NOTE: The following helper functions are available but not currently used
+// to avoid blocking the scrape response. Articles are returned immediately
+// with their original thumbnails (including placeholders).
 
 /**
  * Check if image URL is a placeholder (lazy-loading placeholder, 1x1 pixel, etc.)
@@ -99,7 +107,7 @@ const searchBingImage = async (query) => {
  * @param {Array} articles - Array of article objects
  * @returns {Promise<Array>} - Articles with filled thumbnails
  */
-const fillMissingThumbnails = async (articles) => {
+const fillMissingThumbnails = async (articles, cacheKey = null) => {
   // Filter articles without images or with placeholder images (like lazy-loading GIFs)
   const articlesNeedingImages = articles.filter(article => isPlaceholderImage(article.image));
 
@@ -124,6 +132,16 @@ const fillMissingThumbnails = async (articles) => {
       result.value.article.image = result.value.imageUrl;
     }
   });
+
+  // Update cache if cache key provided
+  if (cacheKey && articlesCache.has(cacheKey)) {
+    articlesCache.set(cacheKey, {
+      articles: articles,
+      timestamp: Date.now(),
+      thumbnailsReady: true
+    });
+    console.log(`Updated cache for ${cacheKey} with thumbnails`);
+  }
 
   return articles;
 };
@@ -363,13 +381,42 @@ const newsController = {
         }
       }
 
-      // Fill missing thumbnails with Google Images
-      const enrichedArticles = await fillMissingThumbnails(uniqueArticles.slice(0, 10));
+      const finalArticles = uniqueArticles.slice(0, 10);
+      const cacheKey = url;
 
+      // Check cache first
+      const now = Date.now();
+      const cached = articlesCache.get(cacheKey);
+
+      if (cached && (now - cached.timestamp < ARTICLE_CACHE_TTL)) {
+        // Return cached articles with thumbnails if available
+        console.log(`Returning cached articles for ${cacheKey} (thumbnails: ${cached.thumbnailsReady ? 'ready' : 'pending'})`);
+        return res.status(200).json({
+          success: true,
+          source: url,
+          articles: cached.articles,
+          thumbnailsReady: cached.thumbnailsReady
+        });
+      }
+
+      // Store articles in cache immediately (without thumbnails)
+      articlesCache.set(cacheKey, {
+        articles: finalArticles,
+        timestamp: now,
+        thumbnailsReady: false
+      });
+
+      // Return articles immediately
       res.status(200).json({
         success: true,
         source: url,
-        articles: enrichedArticles
+        articles: finalArticles,
+        thumbnailsReady: false // Frontend knows to refetch later
+      });
+
+      // Fetch thumbnails in background (fire-and-forget)
+      fillMissingThumbnails(finalArticles, cacheKey).catch(err => {
+        console.error('Background thumbnail fetch error:', err.message);
       });
     } catch (error) {
       console.error('Scrape error:', error.message);
