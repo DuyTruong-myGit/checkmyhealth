@@ -348,245 +348,234 @@
 // };
 
 // module.exports = diagnosisController;
-
-const diagnosisModel = require('../models/diagnosis.model');
 const { pool } = require('../config/db');
 
-// === BẢNG MAP CHUẨN HOÁ TÊN BỆNH ===
-const DISEASE_CODE_MAP = {
-    'Actinic Keratosis': 'Actinic Keratosis',
-    'Basal Cell Carcinoma': 'Basal Cell Carcinoma',
-    'Dermato Fibroma': 'Dermato Fibroma',
-    'Melanoma': 'Melanoma',
-    'Nevus': 'Nevus',
-    'Normal Skin': 'Normal Skin',
-    'Pigmented Benign Keratosis': 'Pigmented Benign Keratosis',
-    'Ringworm': 'Ringworm',
-    'Seborrheic Keratosis': 'Seborrheic Keratosis',
-    'Squamous Cell Carcinoma': 'Squamous Cell Carcinoma',
-    'Vascular Lesion': 'Vascular Lesion',
-    'Unknown_Normal': null,
-};
+// ========================================
+// ✅ HÀM MỚI: Lấy chi tiết bệnh theo disease_code
+// ========================================
+/**
+ * GET /api/diseases/code/:diseaseCode
+ * Tìm thông tin bệnh dựa vào disease_code thay vì ID
+ */
+const getDiseaseByCode = async (req, res) => {
+    try {
+        const { diseaseCode } = req.params;
 
-const diagnosisController = {
-    diagnose: async (req, res) => {
-        try {
-            // 1. Kiểm tra ảnh upload
-            if (!req.file) {
-                return res.status(400).json({ success: false, message: 'Vui lòng upload ảnh.' });
-            }
-            
-            const imageUrl = req.file.secure_url || req.file.url;
+        console.log('='.repeat(70));
+        console.log(`🔍 SEARCHING DISEASE BY CODE: "${diseaseCode}"`);
+        console.log('='.repeat(70));
 
-            // 2. Nhận kết quả AI từ Mobile
-            let aiResult = {};
-            if (req.body.ai_result) {
-                try {
-                    aiResult = JSON.parse(req.body.ai_result);
-                } catch (e) {
-                    aiResult = req.body.ai_result;
-                }
-            }
+        // ✅ QUERY DATABASE VỚI disease_code
+        const [rows] = await pool.query(
+            `SELECT 
+                info_id,
+                disease_code,
+                disease_name_vi,
+                description,
+                symptoms,
+                identification_signs,
+                prevention_measures,
+                treatments_medications,
+                dietary_advice,
+                source_references,
+                image_url,
+                created_at,
+                updated_at
+            FROM skin_diseases_info
+            WHERE disease_code = ?`,
+            [diseaseCode]
+        );
 
-            // ✅ TRIM để loại bỏ dấu cách thừa
-            const predictedClass = (aiResult.class || 'Unknown_Normal').trim();
-            const confidence = parseFloat(aiResult.confidence || 0);
-
-            console.log('='.repeat(70));
-            console.log(`📊 AI PREDICTION: "${predictedClass}" (${(confidence * 100).toFixed(2)}%)`);
-            console.log('='.repeat(70));
-
-            // === LOGIC MỨC ĐỘ NGUY HIỂM ===
-            let riskLevel = 'low';
-            const SAFE_CLASSES = ['Normal Skin', 'Nevus', 'Unknown_Normal'];
-            const CRITICAL_CLASSES = ['Melanoma'];
-            const HIGH_RISK_CLASSES = ['Basal Cell Carcinoma', 'Squamous Cell Carcinoma'];
-
-            if (SAFE_CLASSES.includes(predictedClass)) {
-                riskLevel = 'low'; 
-                if (predictedClass === 'Normal Skin') riskLevel = 'none';
-            } 
-            else if (CRITICAL_CLASSES.includes(predictedClass)) {
-                riskLevel = 'critical';
-            } 
-            else if (HIGH_RISK_CLASSES.includes(predictedClass)) {
-                riskLevel = 'high';
-            } 
-            else {
-                if (confidence >= 0.80) {
-                    riskLevel = 'moderate';
-                } else {
-                    riskLevel = 'low';
-                }
-            }
-
-            console.log(`⚠️  Risk Level: ${riskLevel.toUpperCase()}`);
-
-            // === [ĐÃ SỬA] DÙNG disease_code THAY VÌ info_id ===
-            let diseaseNameVi = "Chưa cập nhật";
-            let diseaseCode = null;  // ← Đổi từ infoId sang diseaseCode
-            let description = "";
-
-            // Xử lý đặc biệt cho Unknown và Normal
-            if (predictedClass === 'Unknown_Normal') {
-                diseaseNameVi = "Không xác định / Ảnh không liên quan";
-                description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này.";
-                diseaseCode = null;
-                console.log('🚫 Unknown/Invalid image - No database lookup');
-            } 
-            else if (predictedClass === 'Normal Skin') {
-                diseaseNameVi = "Da bình thường";
-                description = "Không phát hiện dấu hiệu bất thường.";
-                diseaseCode = null;
-                console.log('✅ Normal healthy skin - No database lookup');
-            } 
-            else {
-                // ✅ Query DB cho các bệnh thật
-                const dbDiseaseCode = DISEASE_CODE_MAP[predictedClass];
-                
-                if (dbDiseaseCode) {
-                    try {
-                        console.log(`🔍 Looking up in database: "${dbDiseaseCode}"`);
-                        
-                        const [rows] = await pool.query(
-                            'SELECT disease_code, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
-                            [dbDiseaseCode]
-                        );
-
-                        console.log(`📦 Database returned ${rows.length} rows`);
-
-                        if (rows.length > 0) {
-                            const diseaseInfo = rows[0];
-                            diseaseNameVi = diseaseInfo.disease_name_vi;
-                            diseaseCode = diseaseInfo.disease_code;  // ← Lấy disease_code thay vì info_id
-                            description = diseaseInfo.description;
-                            
-                            console.log('✅ FOUND IN DATABASE:');
-                            console.log(`   ├─ Disease Code: ${diseaseCode}`);
-                            console.log(`   ├─ Vietnamese Name: ${diseaseNameVi}`);
-                            console.log(`   └─ Description: ${description.substring(0, 50)}...`);
-                        } else {
-                            console.warn('⚠️  NO DATABASE RECORD FOUND!');
-                            console.warn(`   └─ Disease code "${dbDiseaseCode}" does not exist in skin_diseases_info table`);
-                            diseaseNameVi = mapEnglishToVietnamese(predictedClass);
-                        }
-                    } catch (dbError) {
-                        console.error('❌ DATABASE QUERY ERROR:', dbError.message);
-                        diseaseNameVi = mapEnglishToVietnamese(predictedClass);
-                    }
-                } else {
-                    console.warn(`⚠️  Disease not in mapping: "${predictedClass}"`);
-                    diseaseNameVi = predictedClass;
-                }
-            }
-
-            // 5. Chuẩn bị kết quả
-            const finalResult = {
-                success: true,
-                image_url: imageUrl,
-                disease_name: predictedClass,
-                disease_name_vi: diseaseNameVi,
-                disease_code: diseaseCode,  // ← Đổi từ info_id sang disease_code
-                confidence_score: confidence,
-                description: description,
-                risk_level: riskLevel,
-                recommendation: "Kết quả mang tính tham khảo. Vui lòng gặp bác sĩ.",
-                prediction_code: predictedClass, 
-                confidence_percent: `${(confidence * 100).toFixed(2)}%`
-            };
-
-            // 6. Lưu Database
-            await diagnosisModel.create(
-                req.user.userId,
-                imageUrl, 
-                predictedClass, 
-                confidence,
-                finalResult
-            );
-
-            console.log('='.repeat(70));
-            console.log('📤 FINAL RESPONSE TO MOBILE:');
-            console.log(`   ├─ Disease (EN): ${predictedClass}`);
-            console.log(`   ├─ Disease (VI): ${diseaseNameVi}`);
-            console.log(`   ├─ Risk Level: ${riskLevel}`);
-            console.log(`   ├─ Disease Code: ${diseaseCode === null ? 'NULL (no article)' : diseaseCode}`);
-            console.log(`   └─ Confidence: ${(confidence * 100).toFixed(2)}%`);
-            console.log('='.repeat(70));
-
-            return res.status(200).json(finalResult);
-
-        } catch (error) {
-            console.error("❌ Controller Error:", error);
-            res.status(500).json({ success: false, message: 'Lỗi xử lý server' });
-        }
-    },
-    
-    getHistory: async (req, res) => {
-        try {
-            const userId = req.user.userId;
-            const history = await diagnosisModel.findByUserId(userId);
-           
-            res.status(200).json({
-                success: true,
-                count: history.length,
-                data: history
-            });
-        } catch (error) {
-            console.error('Get History Error:', error);
-            res.status(500).json({ 
+        // ✅ KIỂM TRA KẾT QUẢ
+        if (rows.length === 0) {
+            console.warn(`⚠️  No record found for disease_code: "${diseaseCode}"`);
+            return res.status(404).json({
                 success: false,
-                message: 'Lỗi máy chủ', 
-                error: error.message 
+                message: `Không tìm thấy thông tin cho bệnh "${diseaseCode}"`
             });
         }
-    },
 
-    deleteHistoryItem: async (req, res) => {
-        try {
-            const { id } = req.params;
-            const userId = req.user.userId;
+        const diseaseInfo = rows[0];
+        
+        console.log('✅ DISEASE FOUND:');
+        console.log(`   ├─ ID: ${diseaseInfo.info_id}`);
+        console.log(`   ├─ Code: ${diseaseInfo.disease_code}`);
+        console.log(`   ├─ Name (VI): ${diseaseInfo.disease_name_vi}`);
+        console.log(`   └─ Has Image: ${diseaseInfo.image_url ? 'YES' : 'NO'}`);
+        console.log('='.repeat(70));
 
-            const success = await diagnosisModel.deleteById(id, userId);
+        res.status(200).json(diseaseInfo);
 
-            if (success) {
-                res.status(200).json({ 
-                    success: true,
-                    message: 'Đã xóa kết quả chẩn đoán.' 
-                });
-            } else {
-                res.status(404).json({ 
-                    success: false,
-                    message: 'Không tìm thấy bản ghi.' 
-                });
-            }
-        } catch (error) {
-            console.error('Delete Error:', error);
-            res.status(500).json({ 
-                success: false,
-                message: 'Lỗi máy chủ', 
-                error: error.message 
-            });
-        }
+    } catch (error) {
+        console.error('❌ Error in getDiseaseByCode:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Lỗi máy chủ khi tải thông tin bệnh',
+            error: error.message
+        });
     }
 };
 
-// === HÀM HELPER: MAPPING TIẾNG VIỆT (FALLBACK) ===
-function mapEnglishToVietnamese(className) {
-    const mapping = {
-        'Actinic Keratosis': 'Dày sừng quang hóa',
-        'Basal Cell Carcinoma': 'Ung thư tế bào đáy',
-        'Dermato Fibroma': 'U xơ da',
-        'Melanoma': 'Ung thư hắc tố (Melanoma)',
-        'Nevus': 'Nốt ruồi (Nevus)',
-        'Normal Skin': 'Da bình thường',
-        'Pigmented Benign Keratosis': 'Dày sừng da dầu',
-        'Ringworm': 'Hắc lào (Nấm da)',
-        'Seborrheic Keratosis': 'Dày sừng tiết bã',
-        'Squamous Cell Carcinoma': 'Ung thư tế bào vảy',
-        'Vascular Lesion': 'Tổn thương mạch máu',
-        'Unknown_Normal': 'Không xác định'
-    };
-    return mapping[className] || className;
-}
+// ========================================
+// CÁC HÀM CŨ (Giữ nguyên)
+// ========================================
 
-module.exports = diagnosisController;
+/**
+ * GET /api/diseases
+ * Lấy danh sách tất cả các bệnh (có tìm kiếm)
+ */
+const getDiseases = async (req, res) => {
+    try {
+        const { search = '' } = req.query;
+        
+        let query = 'SELECT * FROM skin_diseases_info';
+        const params = [];
+
+        if (search) {
+            query += ' WHERE disease_name_vi LIKE ? OR disease_code LIKE ?';
+            params.push(`%${search}%`, `%${search}%`);
+        }
+
+        query += ' ORDER BY disease_name_vi ASC';
+
+        const [rows] = await pool.query(query, params);
+        res.status(200).json(rows);
+    } catch (error) {
+        console.error('Error getting diseases:', error);
+        res.status(500).json({ message: 'Lỗi tải danh sách bệnh' });
+    }
+};
+
+/**
+ * GET /api/diseases/:id
+ * Lấy chi tiết bệnh theo ID (hàm cũ)
+ */
+const getDiseaseDetail = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const [rows] = await pool.query(
+            'SELECT * FROM skin_diseases_info WHERE info_id = ?',
+            [id]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({ message: 'Không tìm thấy bệnh' });
+        }
+
+        res.status(200).json(rows[0]);
+    } catch (error) {
+        console.error('Error getting disease detail:', error);
+        res.status(500).json({ message: 'Lỗi tải chi tiết bệnh' });
+    }
+};
+
+/**
+ * POST /api/diseases
+ * Tạo bệnh mới (Admin only)
+ */
+const createDisease = async (req, res) => {
+    try {
+        const {
+            disease_code,
+            disease_name_vi,
+            description,
+            symptoms,
+            identification_signs,
+            prevention_measures,
+            treatments_medications,
+            dietary_advice,
+            source_references,
+            image_url
+        } = req.body;
+
+        // Kiểm tra trùng disease_code
+        const [existing] = await pool.query(
+            'SELECT info_id FROM skin_diseases_info WHERE disease_code = ?',
+            [disease_code]
+        );
+
+        if (existing.length > 0) {
+            return res.status(400).json({ message: 'Mã bệnh đã tồn tại' });
+        }
+
+        const [result] = await pool.query(
+            `INSERT INTO skin_diseases_info 
+            (disease_code, disease_name_vi, description, symptoms, 
+             identification_signs, prevention_measures, treatments_medications, 
+             dietary_advice, source_references, image_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [disease_code, disease_name_vi, description, symptoms,
+             identification_signs, prevention_measures, treatments_medications,
+             dietary_advice, source_references, image_url]
+        );
+
+        res.status(201).json({
+            message: 'Tạo bệnh thành công',
+            id: result.insertId
+        });
+    } catch (error) {
+        console.error('Error creating disease:', error);
+        res.status(500).json({ message: 'Lỗi tạo bệnh' });
+    }
+};
+
+/**
+ * PUT /api/diseases/:id
+ * Cập nhật thông tin bệnh (Admin only)
+ */
+const updateDisease = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+
+        const [result] = await pool.query(
+            `UPDATE skin_diseases_info SET ? WHERE info_id = ?`,
+            [updates, id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Không tìm thấy bệnh' });
+        }
+
+        res.status(200).json({ message: 'Cập nhật thành công' });
+    } catch (error) {
+        console.error('Error updating disease:', error);
+        res.status(500).json({ message: 'Lỗi cập nhật bệnh' });
+    }
+};
+
+/**
+ * DELETE /api/diseases/:id
+ * Xóa bệnh (Admin only)
+ */
+const deleteDisease = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const [result] = await pool.query(
+            'DELETE FROM skin_diseases_info WHERE info_id = ?',
+            [id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Không tìm thấy bệnh' });
+        }
+
+        res.status(200).json({ message: 'Xóa bệnh thành công' });
+    } catch (error) {
+        console.error('Error deleting disease:', error);
+        res.status(500).json({ message: 'Lỗi xóa bệnh' });
+    }
+};
+
+// ========================================
+// EXPORT TẤT CẢ HÀM
+// ========================================
+module.exports = {
+    getDiseaseByCode,      // ← HÀM MỚI
+    getDiseases,
+    getDiseaseDetail,
+    createDisease,
+    updateDisease,
+    deleteDisease
+};
