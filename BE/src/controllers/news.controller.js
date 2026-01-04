@@ -16,6 +16,26 @@ const parseHost = (rawUrl) => {
 };
 
 /**
+ * Check if image URL is a placeholder (lazy-loading placeholder, 1x1 pixel, etc.)
+ * @param {string} imageUrl - Image URL to check
+ * @returns {boolean} - True if placeholder
+ */
+const isPlaceholderImage = (imageUrl) => {
+  if (!imageUrl) return true;
+
+  // Common placeholder patterns
+  const placeholderPatterns = [
+    'data:image/gif;base64,R0lGOD', // 1x1 transparent GIF from VnExpress
+    'placeholder',
+    'lazy',
+    '1x1'
+  ];
+
+  return placeholderPatterns.some(pattern => imageUrl.includes(pattern));
+};
+
+
+/**
  * Search Google Images for a query and return the first image URL
  * @param {string} query - Search query (usually article title)
  * @returns {Promise<string|null>} - Image URL or null if not found
@@ -74,8 +94,8 @@ const searchGoogleImage = async (query) => {
  * @returns {Promise<Array>} - Articles with filled thumbnails
  */
 const fillMissingThumbnails = async (articles) => {
-  // Filter articles without images
-  const articlesNeedingImages = articles.filter(article => !article.image);
+  // Filter articles without images or with placeholder images (like lazy-loading GIFs)
+  const articlesNeedingImages = articles.filter(article => isPlaceholderImage(article.image));
 
   if (articlesNeedingImages.length === 0) {
     return articles; // No work needed
