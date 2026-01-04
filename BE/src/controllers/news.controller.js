@@ -15,6 +15,93 @@ const parseHost = (rawUrl) => {
   }
 };
 
+/**
+ * Search Google Images for a query and return the first image URL
+ * @param {string} query - Search query (usually article title)
+ * @returns {Promise<string|null>} - Image URL or null if not found
+ */
+const searchGoogleImage = async (query) => {
+  try {
+    // Clean and encode the query
+    const cleanQuery = query.trim().substring(0, 100);
+    const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(cleanQuery)}&tbm=isch`;
+
+    const response = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 5000
+    });
+
+    const $ = cheerio.load(response.data);
+
+    // Google Images stores image URLs in various places, try multiple strategies
+    let imageUrl = null;
+
+    // Strategy 1: Look for img tags with valid src
+    $('img').each((i, elem) => {
+      const src = $(elem).attr('src');
+      if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
+        // Skip Google's own logos and small images
+        if (!src.includes('google.com/images/') && !src.includes('gstatic.com')) {
+          imageUrl = src;
+          return false; // Break the loop
+        }
+      }
+    });
+
+    // Strategy 2: If no image found, look in data attributes
+    if (!imageUrl) {
+      $('img').each((i, elem) => {
+        const dataSrc = $(elem).attr('data-src') || $(elem).attr('data-iurl');
+        if (dataSrc && (dataSrc.startsWith('http://') || dataSrc.startsWith('https://'))) {
+          imageUrl = dataSrc;
+          return false;
+        }
+      });
+    }
+
+    return imageUrl;
+  } catch (error) {
+    console.error(`Error searching Google Images for "${query}":`, error.message);
+    return null;
+  }
+};
+
+/**
+ * Fill missing thumbnails for articles by searching Google Images
+ * @param {Array} articles - Array of article objects
+ * @returns {Promise<Array>} - Articles with filled thumbnails
+ */
+const fillMissingThumbnails = async (articles) => {
+  // Filter articles without images
+  const articlesNeedingImages = articles.filter(article => !article.image);
+
+  if (articlesNeedingImages.length === 0) {
+    return articles; // No work needed
+  }
+
+  console.log(`Fetching thumbnails for ${articlesNeedingImages.length} articles...`);
+
+  // Fetch images in parallel with error handling
+  const imagePromises = articlesNeedingImages.map(article =>
+    searchGoogleImage(article.title)
+      .then(imageUrl => ({ article, imageUrl }))
+      .catch(() => ({ article, imageUrl: null }))
+  );
+
+  const results = await Promise.allSettled(imagePromises);
+
+  // Update articles with found images
+  results.forEach(result => {
+    if (result.status === 'fulfilled' && result.value.imageUrl) {
+      result.value.article.image = result.value.imageUrl;
+    }
+  });
+
+  return articles;
+};
+
 const getAllowedHosts = async () => {
   const now = Date.now();
   if (cachedHosts && now - cachedHostsLoadedAt < HOST_CACHE_TTL) {
@@ -250,10 +337,13 @@ const newsController = {
         }
       }
 
+      // Fill missing thumbnails with Google Images
+      const enrichedArticles = await fillMissingThumbnails(uniqueArticles.slice(0, 10));
+
       res.status(200).json({
         success: true,
         source: url,
-        articles: uniqueArticles.slice(0, 10)
+        articles: enrichedArticles
       });
     } catch (error) {
       console.error('Scrape error:', error.message);
