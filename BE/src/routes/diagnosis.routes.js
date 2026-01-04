@@ -161,4 +161,6 @@ router.get('/history', authMiddleware, diagnosisController.getHistory);
  */
 router.delete('/:id', authMiddleware, diagnosisController.deleteHistoryItem);
 
+router.get('/code/:diseaseCode', authenticate, diseaseController.getDiseaseByCode);
+
 module.exports = router;
