@@ -380,16 +380,32 @@ const diagnosisController = {
 
             const predictedClass = aiResult.class || 'Unknown_Normal';
             const confidence = parseFloat(aiResult.confidence || 0);
+            // === [SỬA LẠI LOGIC TÍNH MỨC ĐỘ NGUY HIỂM] ===
+            let riskLevel = 'low'; // Mặc định là thấp
 
-            // 3. Logic xác định mức độ nguy hiểm (Risk Level) tại Backend
-            let riskLevel = 'low';
-            if (CANCER_TYPES.includes(predictedClass)) {
+            // 1. Danh sách các lớp AN TOÀN hoặc KHÔNG PHẢI BỆNH (Luôn là Low/None)
+            const SAFE_CLASSES = ['Normal Skin', 'Nevus', 'Unknown_Normal'];
+            
+            // 2. Danh sách các bệnh UNG THƯ/NGUY HIỂM (Luôn là High)
+            const DANGEROUS_CLASSES = ['Melanoma', 'Basal Cell Carcinoma', 'Squamous Cell Carcinoma'];
+
+            if (SAFE_CLASSES.includes(predictedClass)) {
+                // Nếu là da thường, nốt ruồi hoặc ảnh rác -> Luôn an toàn
+                riskLevel = 'low'; 
+                if (predictedClass === 'Normal Skin') riskLevel = 'none'; // Da khỏe hẳn
+            } else if (DANGEROUS_CLASSES.includes(predictedClass)) {
+                // Nếu là ung thư -> Luôn nguy hiểm
                 riskLevel = 'high';
-            } else if (confidence >= 0.85) {
-                riskLevel = 'high'; // Độ tin cậy rất cao cho bất kỳ bệnh nào cũng nên cảnh báo
-            } else if (confidence >= 0.70) {
-                riskLevel = 'moderate';
+            } else {
+                // Các bệnh còn lại (Nấm, Dày sừng...): Dựa vào độ tin cậy
+                if (confidence >= 0.80) {
+                    riskLevel = 'moderate'; // Bệnh da liễu thông thường nhưng rõ ràng -> Cần theo dõi
+                } else {
+                    riskLevel = 'low';
+                }
             }
+
+            
 
             // 4. Lấy thông tin bệnh tiếng Việt từ DB
             let diseaseInfo = null;
@@ -397,19 +413,29 @@ const diagnosisController = {
             let infoId = null;
             let description = "";
 
-            try {
-                const [rows] = await pool.query(
-                    'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
-                    [predictedClass]
-                );
-                if (rows.length > 0) {
-                    diseaseInfo = rows[0];
-                    diseaseNameVi = diseaseInfo.disease_name_vi;
-                    infoId = diseaseInfo.info_id;
-                    description = diseaseInfo.description;
+            // Xử lý cứng cho trường hợp Unknown và Normal để không cần query DB
+            if (predictedClass === 'Unknown_Normal') {
+                diseaseNameVi = "Không xác định / Ảnh không liên quan";
+                description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này. Có thể do ảnh mờ, thiếu sáng hoặc không phải ảnh da.";
+            } else if (predictedClass === 'Normal Skin') {
+                diseaseNameVi = "Da bình thường";
+                description = "Không phát hiện dấu hiệu bất thường trên vùng da này.";
+            } else {
+                // Chỉ query DB nếu là bệnh thật sự
+                try {
+                    const [rows] = await pool.query(
+                        'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
+                        [predictedClass]
+                    );
+                    if (rows.length > 0) {
+                        diseaseInfo = rows[0];
+                        diseaseNameVi = diseaseInfo.disease_name_vi;
+                        infoId = diseaseInfo.info_id;
+                        description = diseaseInfo.description;
+                    }
+                } catch (dbError) {
+                    console.error('Database Query Error:', dbError);
                 }
-            } catch (dbError) {
-                console.error('Database Query Error:', dbError);
             }
 
             // 5. Chuẩn bị dữ liệu để lưu và trả về
