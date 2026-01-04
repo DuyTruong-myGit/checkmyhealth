@@ -365,7 +365,7 @@ const DISEASE_CODE_MAP = {
     'Seborrheic Keratosis': 'Seborrheic Keratosis',
     'Squamous Cell Carcinoma': 'Squamous Cell Carcinoma',
     'Vascular Lesion': 'Vascular Lesion',
-    'Unknown_Normal': null, // Không query DB
+    'Unknown_Normal': null,
 };
 
 const diagnosisController = {
@@ -388,11 +388,12 @@ const diagnosisController = {
                 }
             }
 
-            const predictedClass = aiResult.class || 'Unknown_Normal';
+            // ✅ TRIM để loại bỏ dấu cách thừa
+            const predictedClass = (aiResult.class || 'Unknown_Normal').trim();
             const confidence = parseFloat(aiResult.confidence || 0);
 
             console.log('='.repeat(70));
-            console.log(`📊 AI PREDICTION: ${predictedClass} (${(confidence * 100).toFixed(2)}%)`);
+            console.log(`📊 AI PREDICTION: "${predictedClass}" (${(confidence * 100).toFixed(2)}%)`);
             console.log('='.repeat(70));
 
             // === LOGIC MỨC ĐỘ NGUY HIỂM ===
@@ -421,35 +422,35 @@ const diagnosisController = {
 
             console.log(`⚠️  Risk Level: ${riskLevel.toUpperCase()}`);
 
-            // === LOGIC LẤY THÔNG TIN BỆNH TỪ DB ===
+            // === [ĐÃ SỬA] DÙNG disease_code THAY VÌ info_id ===
             let diseaseNameVi = "Chưa cập nhật";
-            let infoId = null;
+            let diseaseCode = null;  // ← Đổi từ infoId sang diseaseCode
             let description = "";
 
             // Xử lý đặc biệt cho Unknown và Normal
             if (predictedClass === 'Unknown_Normal') {
                 diseaseNameVi = "Không xác định / Ảnh không liên quan";
                 description = "Hệ thống không nhận diện được vùng da bệnh lý trong ảnh này.";
-                infoId = null;
+                diseaseCode = null;
                 console.log('🚫 Unknown/Invalid image - No database lookup');
             } 
             else if (predictedClass === 'Normal Skin') {
                 diseaseNameVi = "Da bình thường";
                 description = "Không phát hiện dấu hiệu bất thường.";
-                infoId = null;
+                diseaseCode = null;
                 console.log('✅ Normal healthy skin - No database lookup');
             } 
             else {
                 // ✅ Query DB cho các bệnh thật
-                const diseaseCode = DISEASE_CODE_MAP[predictedClass];
+                const dbDiseaseCode = DISEASE_CODE_MAP[predictedClass];
                 
-                if (diseaseCode) {
+                if (dbDiseaseCode) {
                     try {
-                        console.log(`🔍 Looking up in database: "${diseaseCode}"`);
+                        console.log(`🔍 Looking up in database: "${dbDiseaseCode}"`);
                         
                         const [rows] = await pool.query(
-                            'SELECT info_id, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
-                            [diseaseCode]
+                            'SELECT disease_code, disease_name_vi, description FROM skin_diseases_info WHERE disease_code = ?', 
+                            [dbDiseaseCode]
                         );
 
                         console.log(`📦 Database returned ${rows.length} rows`);
@@ -457,17 +458,16 @@ const diagnosisController = {
                         if (rows.length > 0) {
                             const diseaseInfo = rows[0];
                             diseaseNameVi = diseaseInfo.disease_name_vi;
-                            infoId = diseaseInfo.info_id;
+                            diseaseCode = diseaseInfo.disease_code;  // ← Lấy disease_code thay vì info_id
                             description = diseaseInfo.description;
                             
                             console.log('✅ FOUND IN DATABASE:');
+                            console.log(`   ├─ Disease Code: ${diseaseCode}`);
                             console.log(`   ├─ Vietnamese Name: ${diseaseNameVi}`);
-                            console.log(`   ├─ Info ID: ${infoId}`);
                             console.log(`   └─ Description: ${description.substring(0, 50)}...`);
                         } else {
                             console.warn('⚠️  NO DATABASE RECORD FOUND!');
-                            console.warn(`   └─ Disease code "${diseaseCode}" does not exist in skin_diseases_info table`);
-                            console.warn(`   └─ Using fallback Vietnamese name`);
+                            console.warn(`   └─ Disease code "${dbDiseaseCode}" does not exist in skin_diseases_info table`);
                             diseaseNameVi = mapEnglishToVietnamese(predictedClass);
                         }
                     } catch (dbError) {
@@ -486,7 +486,7 @@ const diagnosisController = {
                 image_url: imageUrl,
                 disease_name: predictedClass,
                 disease_name_vi: diseaseNameVi,
-                info_id: infoId, // ✅ null nếu không có, có giá trị nếu tìm thấy
+                disease_code: diseaseCode,  // ← Đổi từ info_id sang disease_code
                 confidence_score: confidence,
                 description: description,
                 risk_level: riskLevel,
@@ -509,7 +509,7 @@ const diagnosisController = {
             console.log(`   ├─ Disease (EN): ${predictedClass}`);
             console.log(`   ├─ Disease (VI): ${diseaseNameVi}`);
             console.log(`   ├─ Risk Level: ${riskLevel}`);
-            console.log(`   ├─ Info ID: ${infoId === null ? 'NULL (no article)' : infoId}`);
+            console.log(`   ├─ Disease Code: ${diseaseCode === null ? 'NULL (no article)' : diseaseCode}`);
             console.log(`   └─ Confidence: ${(confidence * 100).toFixed(2)}%`);
             console.log('='.repeat(70));
 
